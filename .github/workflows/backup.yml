@@ -1,0 +1,335 @@
+# =============================================================================
+# Backup semanal — D13 y PART 20 §20.9.
+#
+# El plan de salida (brief §33) es un script probado, no una promesa. Todos los
+# domingos a las 03:00 ART este workflow deja, en un bucket que NO es el que
+# sirve los archivos:
+#
+#   1. pg_dump --format=custom de la base de producción, con el esquema auth
+#      adentro (usuarios + hashes: es lo que hace portables las cuentas).
+#   2. El manifiesto de resource_files en CSV, para poder cruzar filas de la
+#      base contra objetos de R2 durante una restauración.
+#   3. Una copia espejo del bucket de R2 que sirve los archivos.
+#
+# El dump y el manifiesto se cifran con age (clave privada: en el gestor de
+# contraseñas del fundador y offline; nunca acá). Se conservan 8 semanas.
+# El job falla ruidosamente — GitHub manda mail al fundador cuando falla un
+# workflow programado — si el dump pesa 0 bytes o si encogió más de 20%
+# respecto de la semana anterior.
+#
+# Nada está hardcodeado: todo sale de secrets de Actions.
+#
+#   SUPABASE_DB_URL             URI de Postgres de producción. Tiene que ser la
+#                               del pooler en modo sesión y con sslmode=require:
+#                               los runners de GitHub no tienen IPv6 y la
+#                               conexión directa a Supabase hoy es IPv6.
+#   AGE_RECIPIENT               clave PÚBLICA de age (age1...). La privada
+#                               nunca entra a CI.
+#   R2_ACCOUNT_ID               cuenta del bucket que sirve los archivos
+#   R2_ACCESS_KEY_ID            credenciales de solo lectura sobre ese bucket
+#   R2_SECRET_ACCESS_KEY
+#   R2_BUCKET                   bucket que sirve (§0.5-R17)
+#   R2_BACKUP_ACCOUNT_ID        cuenta del bucket de backup (puede ser la misma
+#                               cuenta; separarla separa el dominio de falla)
+#   R2_BACKUP_ACCESS_KEY_ID     credenciales acotadas al bucket de backup
+#   R2_BACKUP_SECRET_ACCESS_KEY
+#   R2_BACKUP_BUCKET            bucket de backup — nunca el mismo que sirve
+#
+# La restauración se ensaya el primer viernes de cada mes (PART 26 §26.5): un
+# backup que nunca se restauró es una esperanza, no un backup.
+# =============================================================================
+name: Backup semanal
+
+on:
+  schedule:
+    # 06:00 UTC del domingo = domingo 03:00 en Argentina (UTC-3 todo el año, no
+    # hay horario de verano). GitHub puede demorar la corrida unos minutos.
+    - cron: '0 6 * * 0'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Subir aunque el dump haya encogido más de 20% (usar solo después de una purga de retención grande y explicada en docs/decisions.md)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Dos backups simultáneos escribirían sobre el mismo prefijo del bucket.
+concurrency:
+  group: backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    name: Dump + manifiesto + espejo de R2
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      # Remoto rclone del bucket que SIRVE los archivos (origen, solo lectura).
+      # rclone arma la config desde estas variables: no queda ningún archivo de
+      # configuración con credenciales en el disco del runner.
+      RCLONE_CONFIG_SERVE_TYPE: s3
+      RCLONE_CONFIG_SERVE_PROVIDER: Cloudflare
+      RCLONE_CONFIG_SERVE_REGION: auto
+      RCLONE_CONFIG_SERVE_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      RCLONE_CONFIG_SERVE_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      RCLONE_CONFIG_SERVE_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+      RCLONE_CONFIG_SERVE_NO_CHECK_BUCKET: 'true'
+
+      # Remoto rclone del bucket de BACKUP (destino). Credenciales propias:
+      # que una filtración del lado que sirve no alcance a las copias.
+      RCLONE_CONFIG_BACKUP_TYPE: s3
+      RCLONE_CONFIG_BACKUP_PROVIDER: Cloudflare
+      RCLONE_CONFIG_BACKUP_REGION: auto
+      RCLONE_CONFIG_BACKUP_ACCESS_KEY_ID: ${{ secrets.R2_BACKUP_ACCESS_KEY_ID }}
+      RCLONE_CONFIG_BACKUP_SECRET_ACCESS_KEY: ${{ secrets.R2_BACKUP_SECRET_ACCESS_KEY }}
+      RCLONE_CONFIG_BACKUP_ENDPOINT: https://${{ secrets.R2_BACKUP_ACCOUNT_ID }}.r2.cloudflarestorage.com
+      RCLONE_CONFIG_BACKUP_NO_CHECK_BUCKET: 'true'
+
+      SERVE_BUCKET: ${{ secrets.R2_BUCKET }}
+      BACKUP_BUCKET: ${{ secrets.R2_BACKUP_BUCKET }}
+
+    steps:
+      # -----------------------------------------------------------------------
+      # 1. Herramientas. Ni pg_dump ni age ni rclone vienen en el runner.
+      #    pg_dump sale de la imagen oficial de Postgres en vez de apt: nunca
+      #    puede ser más viejo que el servidor (un pg_dump 16 contra un servidor
+      #    17 aborta), y la versión queda fijada acá y no en lo que traiga
+      #    Ubuntu ese mes.
+      # -----------------------------------------------------------------------
+      - name: Instalar age y rclone
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends age rclone
+          docker pull --quiet postgres:17-alpine
+
+      - name: Preparar el directorio de trabajo
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/backup"
+          echo "STAMP=$(date -u +%Y-%m-%d)" >> "$GITHUB_ENV"
+
+      # -----------------------------------------------------------------------
+      # 2. Dump de la base, con el esquema auth adentro.
+      #
+      #    --schema=public --schema=auth  public es el producto; auth son las
+      #      cuentas (usuarios + hashes bcrypt). Sin auth el backup restaura
+      #      contenido huérfano: nadie podría volver a entrar a su cuenta.
+      #    --format=custom                permite restauración selectiva por
+      #      tabla con pg_restore, que es lo que necesita el ensayo mensual.
+      #    --no-owner --no-privileges     los roles de un proyecto Supabase son
+      #      administrados y no coinciden entre proyectos; el dueño y los grants
+      #      los vuelven a poner las migraciones, que son la fuente de verdad
+      #      (D14.1). Restaurar propietarios de otro proyecto solo da errores.
+      #
+      #    §20.9 marca el juego exacto de flags como "verificar en S0": el primer
+      #    ensayo de restauración manda. Si el dump se vuelve pesado, el primer
+      #    candidato a --exclude-table-data es auth.audit_log_entries.
+      # -----------------------------------------------------------------------
+      - name: pg_dump de producción
+        env:
+          PGURL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -e PGURL \
+            -v "$GITHUB_WORKSPACE/backup:/out" \
+            postgres:17-alpine \
+            sh -c 'pg_dump "$PGURL" \
+              --format=custom \
+              --compress=9 \
+              --no-owner \
+              --no-privileges \
+              --schema=public \
+              --schema=auth \
+              --file=/out/ucanet-db-'"$STAMP"'.dump'
+
+      # -----------------------------------------------------------------------
+      # 3. Manifiesto de archivos en CSV. La base sabe qué objetos deberían
+      #    existir en R2; el bucket sabe cuáles existen. El cruce de ambos es lo
+      #    que convierte una restauración en algo verificable en vez de en un
+      #    "parece que están todos".
+      # -----------------------------------------------------------------------
+      - name: Manifiesto de resource_files
+        env:
+          PGURL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -e PGURL \
+            -v "$GITHUB_WORKSPACE/backup:/out" \
+            postgres:17-alpine \
+            sh -c 'psql "$PGURL" -v ON_ERROR_STOP=1 -c "\copy (select f.id, r.public_id as resource_public_id, f.storage_path, f.original_name, f.mime, f.size_bytes, f.sha256, f.replaced_at, f.created_at from public.resource_files f join public.resources r on r.id = f.resource_id order by f.id) to /out/ucanet-files-'"$STAMP"'.csv with (format csv, header)"'
+
+      # -----------------------------------------------------------------------
+      # 4. Guarda de tamaño cero. Un pg_dump que "anduvo" y pesa 0 bytes es el
+      #    modo de falla clásico de los backups: el job pasa en verde durante
+      #    meses y el día que hace falta no hay nada. Se corta acá, antes de
+      #    subir nada, para no pisar la retención con un archivo vacío.
+      # -----------------------------------------------------------------------
+      - name: Verificar que el dump no esté vacío
+        run: |
+          set -euo pipefail
+          DUMP="$GITHUB_WORKSPACE/backup/ucanet-db-$STAMP.dump"
+          CSV="$GITHUB_WORKSPACE/backup/ucanet-files-$STAMP.csv"
+          SIZE=$(wc -c < "$DUMP" | tr -d ' ')
+          if [ "$SIZE" -eq 0 ]; then
+            echo "::error::El dump de $STAMP pesa 0 bytes. No se sube nada. Revisá SUPABASE_DB_URL y el estado del proyecto."
+            exit 1
+          fi
+          if [ ! -s "$CSV" ]; then
+            echo "::error::El manifiesto de resource_files quedó vacío (ni siquiera la cabecera). El \\copy no corrió."
+            exit 1
+          fi
+          echo "DUMP_SIZE=$SIZE" >> "$GITHUB_ENV"
+          echo "Dump de $STAMP: $SIZE bytes."
+
+      # -----------------------------------------------------------------------
+      # 5. Cifrado. age con la clave pública del fundador: el runner puede
+      #    cifrar y no puede descifrar. Lo que queda en el bucket de backup es
+      #    ilegible incluso para quien tenga las credenciales del bucket.
+      # -----------------------------------------------------------------------
+      - name: Cifrar con age
+        env:
+          AGE_RECIPIENT: ${{ secrets.AGE_RECIPIENT }}
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/backup"
+          age -r "$AGE_RECIPIENT" -o "ucanet-db-$STAMP.dump.age" "ucanet-db-$STAMP.dump"
+          age -r "$AGE_RECIPIENT" -o "ucanet-files-$STAMP.csv.age" "ucanet-files-$STAMP.csv"
+          rm -f "ucanet-db-$STAMP.dump" "ucanet-files-$STAMP.csv"
+          ls -l
+
+      # -----------------------------------------------------------------------
+      # 6. Guarda de encogimiento. Se compara contra el .age más reciente que
+      #    ya está en el bucket. Comparar cifrados es válido: age no comprime y
+      #    su cabecera es de unos cientos de bytes, así que una caída de 20% en
+      #    el cifrado es una caída de 20% en el contenido.
+      #
+      #    Una purga de retención grande puede disparar esto de forma legítima:
+      #    en ese caso se relanza a mano con force=true y queda la explicación
+      #    en docs/decisions.md (PART 26 §26.3).
+      # -----------------------------------------------------------------------
+      - name: Comparar contra el backup anterior
+        env:
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          NEW=$(wc -c < "$GITHUB_WORKSPACE/backup/ucanet-db-$STAMP.dump.age" | tr -d ' ')
+          PREV=$(rclone lsjson "backup:$BACKUP_BUCKET/db" --files-only 2>/dev/null \
+                 | jq '[.[] | select(.Name | endswith(".age"))] | sort_by(.Name) | last | .Size // 0' \
+                 || echo 0)
+          echo "Cifrado de esta semana: $NEW bytes. Semana anterior: $PREV bytes."
+          if [ "${PREV:-0}" -le 0 ]; then
+            echo "No hay backup previo con el que comparar (primera corrida)."
+            exit 0
+          fi
+          MIN=$(( PREV * 80 / 100 ))
+          if [ "$NEW" -lt "$MIN" ]; then
+            if [ "${FORCE:-false}" = "true" ]; then
+              echo "::warning::El dump encogió de $PREV a $NEW bytes (mínimo aceptable $MIN). Se continúa por force=true."
+            else
+              echo "::error::El dump de $STAMP pesa $NEW bytes, más de 20% menos que el anterior ($PREV, mínimo aceptable $MIN). No se sube nada. Si fue una purga esperada, relanzá el workflow con force=true y anotalo en docs/decisions.md."
+              exit 1
+            fi
+          fi
+
+      # -----------------------------------------------------------------------
+      # 7. Subida al bucket de backup.
+      # -----------------------------------------------------------------------
+      - name: Subir dump y manifiesto
+        run: |
+          set -euo pipefail
+          rclone copyto "$GITHUB_WORKSPACE/backup/ucanet-db-$STAMP.dump.age" \
+            "backup:$BACKUP_BUCKET/db/ucanet-db-$STAMP.dump.age" --s3-no-check-bucket
+          rclone copyto "$GITHUB_WORKSPACE/backup/ucanet-files-$STAMP.csv.age" \
+            "backup:$BACKUP_BUCKET/manifest/ucanet-files-$STAMP.csv.age" --s3-no-check-bucket
+
+      # -----------------------------------------------------------------------
+      # 8. Espejo del bucket de R2 que sirve los archivos (§0.5-R17). Servir y
+      #    respaldar no comparten dominio de falla: son buckets distintos, con
+      #    credenciales distintas.
+      #
+      #    sync borra en destino lo que ya no está en origen — que es lo que se
+      #    pide, pero también propagaría un borrado accidental o malicioso. Por
+      #    eso --backup-dir: lo que el sync borraría se mueve a un prefijo con
+      #    fecha en vez de desaparecer, y ese prefijo tiene su propia retención
+      #    de 8 semanas (paso 9).
+      # -----------------------------------------------------------------------
+      - name: Espejar el bucket de archivos
+        run: |
+          set -euo pipefail
+          rclone sync "serve:$SERVE_BUCKET" "backup:$BACKUP_BUCKET/files" \
+            --backup-dir "backup:$BACKUP_BUCKET/files-borrados/$STAMP" \
+            --fast-list \
+            --transfers 8 \
+            --checkers 16 \
+            --s3-no-check-bucket \
+            --stats-one-line \
+            --stats 30s
+
+      # -----------------------------------------------------------------------
+      # 9. Retención: 8 semanas. Se conservan los 8 dumps y los 8 manifiestos
+      #    más nuevos (los nombres ordenan cronológicamente porque llevan la
+      #    fecha ISO), y se limpia el staging de borrados con más de 56 días.
+      # -----------------------------------------------------------------------
+      - name: Retención de 8 semanas
+        run: |
+          set -euo pipefail
+          prune() {
+            # El `|| echo '[]'` cubre la primera corrida, cuando el prefijo
+            # todavía no existe y rclone sale con error.
+            rclone lsjson "backup:$BACKUP_BUCKET/$1" --files-only 2>/dev/null || echo '[]'
+          }
+          prune_prefix() {
+            prune "$1" \
+              | jq -r 'sort_by(.Name) | reverse | .[8:] | .[].Path' \
+              | while IFS= read -r old; do
+                  [ -n "$old" ] || continue
+                  echo "Retención: borrando $1/$old"
+                  rclone deletefile "backup:$BACKUP_BUCKET/$1/$old"
+                done
+          }
+          prune_prefix db
+          prune_prefix manifest
+          rclone delete "backup:$BACKUP_BUCKET/files-borrados" --min-age 56d --rmdirs || true
+
+      # -----------------------------------------------------------------------
+      # 10. Resumen en la corrida: qué quedó guardado y de qué tamaño.
+      # -----------------------------------------------------------------------
+      - name: Resumen
+        if: always()
+        run: |
+          {
+            echo "## Backup semanal · $STAMP"
+            echo ""
+            echo "- Dump cifrado: \`db/ucanet-db-$STAMP.dump.age\`"
+            echo "- Manifiesto cifrado: \`manifest/ucanet-files-$STAMP.csv.age\`"
+            echo "- Espejo de archivos: \`files/\` (borrados movidos a \`files-borrados/$STAMP\`)"
+            echo "- Retención: 8 semanas"
+            echo ""
+            echo "Contenido actual del bucket de backup:"
+            echo ""
+            echo '```'
+            rclone lsl "backup:$BACKUP_BUCKET/db" 2>/dev/null || echo "(no se pudo listar)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # -----------------------------------------------------------------------
+      # 11. Falla ruidosa. GitHub ya manda mail al dueño del repo cuando falla
+      #     un workflow programado; esto deja además el motivo escrito arriba de
+      #     todo en la corrida, para no tener que leer los logs desde el celular.
+      # -----------------------------------------------------------------------
+      - name: Avisar la falla
+        if: failure()
+        run: |
+          {
+            echo "## El backup de $STAMP FALLÓ"
+            echo ""
+            echo "El producto quedó sin copia de esta semana. Revisá el paso en rojo y volvé a lanzar el workflow a mano."
+            echo "Runbook: docs/runbooks/ (restauración y ensayo mensual, PART 21 §21.7)."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::Backup semanal fallido ($STAMP). No hay copia nueva."

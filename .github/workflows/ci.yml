@@ -1,0 +1,238 @@
+# =============================================================================
+# CI — PART 25 §25.7 (presupuesto: menos de 10 minutos de reloj de pared).
+#
+# Los cuatro jobs corren en paralelo. TODOS SON BLOQUEANTES: `main` solo se
+# mergea con los cuatro en verde, porque no hay equipo de QA ni segunda persona
+# revisando (PART 26 §26.1). El único paso no bloqueante del pipeline es
+# Lighthouse, marcado como tal más abajo.
+#
+#   check  BLOQUEANTE  tipos, lint con límites de import, formato, patrones prohibidos
+#   unit   BLOQUEANTE  Vitest (PART 25 §25.2: lógica pura)
+#   db     BLOQUEANTE  migraciones replayables + pgTAP + drift de lib/types.gen.ts
+#   e2e    BLOQUEANTE  build + los flujos dorados de Playwright (PART 25 §25.4)
+#
+# El job `db` es el que más importa: RLS es la única pared entre el anonimato y
+# la exposición (D5), así que su suite manda sobre todo lo demás.
+# =============================================================================
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Un push nuevo cancela la corrida vieja de la misma rama: los minutos gratis de
+# Actions no se gastan en commits ya superados.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Solo lectura: ningún job de CI escribe en el repo.
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # BLOQUEANTE · check — tipos, lint, formato y el grep de PART 25 §25.8.
+  # ---------------------------------------------------------------------------
+  check:
+    name: check (tipos, lint, prohibidos)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      # tsc con strict + noUncheckedIndexedAccess (BUILD CONTRACT §0).
+      - name: Typecheck
+        run: npm run typecheck
+
+      # ESLint incluye los límites de import de PART 27 §27.4
+      # (features nunca importa otra feature; lib no importa nada de app).
+      - name: Lint
+        run: npm run lint
+
+      - name: Formato
+        run: npm run format:check
+
+      # El grep de patrones prohibidos: service_role suelta, supabase.from()
+      # fuera de la capa de datos, valores arbitrarios de Tailwind, texto de UI
+      # en inglés, select('*') sobre tablas base, y demás (PART 25 §25.8).
+      - name: Patrones prohibidos
+        run: bash scripts/forbidden.sh
+
+      # Commits convencionales por regex, sin tooling extra (PART 26 §26.1).
+      # El título llega por env, nunca interpolado dentro del shell.
+      - name: Título del PR
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          if ! printf '%s' "$PR_TITLE" | grep -Eq '^(feat|fix|db|test|docs|chore|revert)(\([a-z0-9-]+\))?!?: .+'; then
+            echo "::error::El título del PR tiene que empezar con feat|fix|db|test|docs|chore|revert (PART 26 §26.1). Título actual: $PR_TITLE"
+            exit 1
+          fi
+
+  # ---------------------------------------------------------------------------
+  # BLOQUEANTE · unit — Vitest sobre lógica pura, sin I/O (PART 25 §25.2).
+  # ---------------------------------------------------------------------------
+  unit:
+    name: unit (Vitest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Vitest
+        run: npm test
+
+  # ---------------------------------------------------------------------------
+  # BLOQUEANTE · db — el stack de Supabase efímero: cadena de migraciones
+  # replayable desde cero, suite pgTAP y chequeo de drift de tipos.
+  # ---------------------------------------------------------------------------
+  db:
+    name: db (pgTAP + drift de tipos)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # El CLI trae Postgres, GoTrue y PostgREST en Docker; la configuración del
+      # stack local vive en supabase/config.toml.
+      - name: Instalar el CLI de Supabase
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      # Se excluyen los servicios que el MVP no usa: Studio es UI, imgproxy
+      # depende de Storage (que no usamos, §0.5-R17) y no hay Edge Functions.
+      # Mailpit se queda: los flujos de registro leen el mail de confirmación.
+      - name: Levantar el stack local
+        run: supabase start -x studio,imgproxy,edge-runtime
+
+      # `db reset` reconstruye desde cero: replaya supabase/migrations/*.sql en
+      # orden y aplica los seeds. Es la prueba semanal por construcción de que
+      # la cadena de migraciones es replayable — la propiedad de portabilidad a
+      # 10 años (PART 26 §26.4 paso 2).
+      - name: Replayar migraciones desde cero
+        run: supabase db reset
+
+      # La suite crítica (PART 25 §25.1): cada política con su test de permitir
+      # y su test de denegar (D14.2).
+      - name: pgTAP
+        run: supabase test db
+
+      # Los tipos generados están commiteados; si el esquema se movió y nadie
+      # corrió `npm run gen:types`, el diff rompe acá y no en producción
+      # (PART 25 §25.7, PART 26 §26.4 paso 4).
+      - name: Drift de lib/types.gen.ts
+        run: |
+          supabase gen types typescript --local > lib/types.gen.ts
+          # --exit-code imprime el diff y rompe si el archivo commiteado cambió.
+          # El porcelain cubre además el caso de que el archivo ni siquiera esté
+          # versionado, donde `git diff` no tendría nada que comparar.
+          if ! git diff --exit-code lib/types.gen.ts || [ -n "$(git status --porcelain -- lib/types.gen.ts)" ]; then
+            echo "::error file=lib/types.gen.ts::lib/types.gen.ts quedó desactualizado respecto de supabase/migrations (o no está commiteado). Corré 'npm run gen:types' y commiteá el diff."
+            exit 1
+          fi
+
+  # ---------------------------------------------------------------------------
+  # BLOQUEANTE · e2e — Playwright contra la app buildeada, apuntando al stack
+  # local de Supabase. Autocontenido: no necesita el preview de Vercel ni
+  # secretos. Para correrlo contra un preview, exportá PLAYWRIGHT_BASE_URL y
+  # playwright.config.ts deja de levantar su propio servidor.
+  # ---------------------------------------------------------------------------
+  e2e:
+    name: e2e (Playwright, flujos dorados)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Instalar el CLI de Supabase
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      # `supabase start` ya aplica migraciones y seeds: los flujos dorados
+      # corren contra el catálogo de APPENDIX A y las fixtures de seed.sql.
+      - name: Levantar el stack local
+        run: supabase start -x studio,imgproxy,edge-runtime
+
+      # Del status del stack exportamos SOLO la URL y la anon key. La service
+      # role key existe en ese output y queda deliberadamente afuera: el build
+      # nunca tiene que poder verla (D14.3).
+      - name: Exportar el entorno del stack
+        run: |
+          set -euo pipefail
+          eval "$(supabase status -o env)"
+          {
+            echo "NEXT_PUBLIC_SUPABASE_URL=$API_URL"
+            echo "NEXT_PUBLIC_SUPABASE_ANON_KEY=$ANON_KEY"
+            echo "NEXT_PUBLIC_SITE_URL=http://localhost:3000"
+          } >> "$GITHUB_ENV"
+
+      # Los dos proyectos de playwright.config.ts (Pixel 7 y Desktop Chrome)
+      # son Chromium. Si se agrega un proyecto WebKit, sumalo también acá.
+      - name: Instalar navegadores
+        run: npx playwright install --with-deps chromium
+
+      # playwright.config.ts corre `npm run build && npm run start` como
+      # webServer: el build de producción es parte de este paso.
+      - name: Flujos dorados + axe
+        run: npm run test:e2e
+
+      - name: Guardar el reporte
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7
+
+      # ---- NO BLOQUEANTE ----------------------------------------------------
+      # Presupuestos de PART 22 §22.1 vía Lighthouse CI (lighthouserc.json).
+      # No bloquea el merge todavía porque mide contra el stack local y no
+      # contra el preview de Vercel: sirve como señal de regresión, no como
+      # veredicto. Cuando haya preview estable, pasa a bloqueante.
+      - name: Lighthouse (presupuestos de performance)
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        run: npx lhci autorun
+
+      - name: Guardar el reporte de Lighthouse
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighthouse-report
+          path: .lighthouseci/
+          retention-days: 7

@@ -1,0 +1,125 @@
+# =============================================================================
+# Migraciones a producción — PART 20 §20.8 y PART 26 §26.4 paso 6.
+#
+# Al mergear a `main`, este workflow aplica a la base de producción las
+# migraciones que todavía no están aplicadas. El editor SQL del dashboard no se
+# usa nunca (D14.1): el esquema cambia solo por archivos commiteados en
+# supabase/migrations, y este job es la única mano que los aplica.
+#
+# POSTURA: MIGRAR-Y-DESPUÉS-DESPLEGAR, SIEMPRE ADITIVO (§20.8)
+# -------------------------------------------------------------
+# Vercel despliega `main` por su cuenta, apenas ve el merge. Este job y ese
+# deploy CORREN EN CARRERA: no hay forma de encadenarlos en el plan Hobby, y no
+# hace falta, porque las migraciones son aditivas por regla.
+#
+#   Toda migración tiene que ser compatible hacia atrás con la app que HOY está
+#   desplegada: agregar tablas, columnas, índices y políticas — nunca renombrar,
+#   borrar ni angostar en la misma entrega que el código que deja de usarlos.
+#
+# Con esa regla, los dos órdenes posibles de la carrera son seguros:
+#   · esquema nuevo + código viejo  → el código viejo ignora lo que no conoce
+#   · esquema viejo + código nuevo  → dura segundos, y los caminos que dependen
+#     del esquema nuevo solo se recorren después de que la migración corrió
+#
+# Un cambio destructivo se hace en dos entregas (expand/contract):
+#   entrega N   migración aditiva + código que lee las dos formas
+#   entrega N+1 migración de contracción, recién con N verificada en producción
+# Los CREATE INDEX sobre tablas con volumen van CONCURRENTLY.
+#
+# Sin migraciones hacia atrás: si algo sale mal se arregla hacia adelante con
+# una migración nueva; la red de contención es el pg_dump semanal
+# (.github/workflows/backup.yml) y el ensayo mensual de restauración.
+#
+# SECRETS
+#   SUPABASE_ACCESS_TOKEN   token personal de acceso del CLI de Supabase
+#   SUPABASE_PROJECT_REF    ref del proyecto de PRODUCCIÓN (nunca el de preview)
+#   SUPABASE_DB_PASSWORD    contraseña de la base de producción, para el link
+# =============================================================================
+name: Migraciones a producción
+
+on:
+  push:
+    branches: [main]
+    # Solo cuando cambia el esquema. `db push` es idempotente, pero correrlo en
+    # cada merge de copy o de CSS es ruido sobre la base de producción.
+    paths:
+      - 'supabase/migrations/**'
+      - '.github/workflows/migrations.yml'
+  # Escotilla manual: reaplicar después de arreglar un secret, o empujar una
+  # migración que se mergeó junto con otros cambios y quedó fuera del filtro.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Nunca dos aplicaciones de migraciones a la vez, y jamás cancelar una a mitad
+# de camino: `cancel-in-progress: false` es deliberado.
+concurrency:
+  group: migrations-prod
+  cancel-in-progress: false
+
+jobs:
+  push:
+    name: supabase db push --linked
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # El entorno permite exigir aprobación manual desde Settings → Environments
+    # el día que haya más de una persona con acceso.
+    environment: production
+
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar el CLI de Supabase
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      # El link deja el proyecto de producción como destino de los comandos
+      # --linked. El ref y la contraseña salen de secrets: no hay ningún dato
+      # del proyecto escrito en el repo.
+      - name: Vincular el proyecto de producción
+        run: supabase link --project-ref "${{ secrets.SUPABASE_PROJECT_REF }}"
+
+      # Antes de tocar nada: qué hay aplicado en producción contra qué hay en el
+      # repo. Queda en el log de la corrida, que es el registro de cuándo entró
+      # cada migración.
+      - name: Migraciones pendientes
+        run: |
+          set -euo pipefail
+          {
+            echo "## Estado de las migraciones · commit ${GITHUB_SHA:0:7}"
+            echo ""
+            echo '```'
+            supabase migration list --linked
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # Aplica en orden las migraciones que faltan. Forward-only: el CLI nunca
+      # reescribe ni revierte una migración ya aplicada.
+      - name: Aplicar migraciones
+        run: supabase db push --linked
+
+      - name: Estado final
+        if: always()
+        run: |
+          set -euo pipefail
+          {
+            echo ""
+            echo "### Después de aplicar"
+            echo ""
+            echo '```'
+            supabase migration list --linked || echo "(no se pudo listar)"
+            echo '```'
+            echo ""
+            echo "Verificá /api/health y una página afectada por el cambio (PART 26 §26.4 paso 6)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Avisar la falla
+        if: failure()
+        run: |
+          echo "::error::Fallaron las migraciones de producción en ${GITHUB_SHA:0:7}. La app desplegada puede estar corriendo contra el esquema viejo: como toda migración es aditiva (§20.8), eso es seguro por un rato, pero arreglalo hacia adelante con una migración nueva — nunca editando una ya aplicada."

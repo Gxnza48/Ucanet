@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-label="uca.net — La capa estudiantil de UCA Rosario">
+  <title>uca.net</title>
+  <desc>
+    Imagen de vista previa por defecto (PART 23 §23.3, PART 20 §20.4): wordmark sobre fondo papel,
+    con el punto en azul birome. Es la FUENTE editable; lo que consume la metadata es el PNG que
+    sale de acá (public/og-default.png), porque WhatsApp, Facebook y X no rasterizan SVG en og:image.
+    Los colores son los tokens de app/tokens.css en modo claro: --color-bg #fafaf7,
+    --color-text-primary #1c1b1a, --color-text-secondary #57534e, --color-accent #2440b3,
+    --color-border #e7e5e0. La imagen no se adapta al modo oscuro a propósito: la previsualización
+    la pinta el cliente de mensajería, no el navegador del usuario.
+    D10: si el producto se renombra, se edita el texto de acá y se vuelve a exportar el PNG.
+  </desc>
+
+  <rect width="1200" height="630" fill="#fafaf7"/>
+
+  <!-- Hairline de 1px, el mismo gesto que separa las filas en toda la interfaz. -->
+  <rect x="0" y="0" width="1200" height="6" fill="#2440b3"/>
+  <rect x="120" y="470" width="960" height="1" fill="#e7e5e0"/>
+
+  <!-- Wordmark: serif, el punto en acento (PART 18 §18.6). -->
+  <text x="120" y="300" font-family="Georgia, 'Source Serif 4', 'Times New Roman', serif" font-size="148" font-weight="600" letter-spacing="-1.5" fill="#1c1b1a">uca<tspan fill="#2440b3">.</tspan>net</text>
+
+  <!-- Bajada (SITE_TAGLINE de lib/config.ts). -->
+  <text x="126" y="380" font-family="'Segoe UI', system-ui, Helvetica, Arial, sans-serif" font-size="44" fill="#57534e">La capa estudiantil de UCA Rosario</text>
+
+  <!-- Descargo obligatorio de D8, en versión corta: la larga no se lee a este tamaño. -->
+  <text x="126" y="530" font-family="'Segoe UI', system-ui, Helvetica, Arial, sans-serif" font-size="26" fill="#57534e">Sitio independiente hecho por estudiantes.</text>
+  <text x="126" y="568" font-family="'Segoe UI', system-ui, Helvetica, Arial, sans-serif" font-size="26" fill="#57534e">Sin afiliación con la Universidad Católica Argentina.</text>
+</svg>

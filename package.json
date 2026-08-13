@@ -1,0 +1,62 @@
+{
+  "name": "ucanet",
+  "version": "0.1.0",
+  "private": true,
+  "description": "uca.net — la capa estudiantil de UCA Rosario",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "typecheck": "tsc --noEmit",
+    "typecheck:e2e": "tsc --noEmit -p tsconfig.e2e.json",
+    "format": "prettier --write \"**/*.{ts,tsx,css,md,json}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,css,md,json}\"",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "db:start": "supabase start",
+    "db:reset": "supabase db reset",
+    "db:test": "supabase test db",
+    "db:seed:catalog": "node scripts/apply-catalog-seed.mjs",
+    "gen:types": "supabase gen types typescript --local > lib/types.gen.ts",
+    "forbidden": "bash scripts/forbidden.sh",
+    "check": "npm run typecheck && npm run typecheck:e2e && npm run lint && npm run forbidden && npm run test"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "3.1109.0",
+    "@aws-sdk/s3-request-presigner": "3.1109.0",
+    "@radix-ui/react-dialog": "1.1.23",
+    "@radix-ui/react-dropdown-menu": "2.1.24",
+    "@sentry/nextjs": "10.70.0",
+    "@supabase/ssr": "0.12.4",
+    "@supabase/supabase-js": "2.112.3",
+    "lucide-react": "1.31.0",
+    "nanoid": "6.0.1",
+    "next": "16.3.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "server-only": "0.0.1",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.13.0",
+    "@lhci/cli": "0.15.1",
+    "@playwright/test": "1.62.1",
+    "@tailwindcss/postcss": "4.3.3",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.3.0",
+    "eslint-plugin-boundaries": "7.2.0",
+    "prettier": "3.9.6",
+    "supabase": "2.114.0",
+    "tailwindcss": "4.3.3",
+    "typescript": "^5",
+    "vitest": "4.1.10"
+  },
+  "engines": {
+    "node": ">=20.9.0"
+  }
+}

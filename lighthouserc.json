@@ -1,0 +1,52 @@
+{
+  "ci": {
+    "collect": {
+      "startServerCommand": "npm run start",
+      "startServerReadyPattern": "Ready in|started server on",
+      "startServerReadyTimeout": 120000,
+      "url": [
+        "http://localhost:3000/",
+        "http://localhost:3000/materias/derecho-constitucional",
+        "http://localhost:3000/p/seedpost01"
+      ],
+      "numberOfRuns": 1,
+      "settings": {
+        "formFactor": "mobile",
+        "throttlingMethod": "simulate",
+        "throttling": {
+          "rttMs": 150,
+          "throughputKbps": 1638.4,
+          "requestLatencyMs": 562.5,
+          "downloadThroughputKbps": 1474.56,
+          "uploadThroughputKbps": 675,
+          "cpuSlowdownMultiplier": 4
+        },
+        "screenEmulation": {
+          "mobile": true,
+          "width": 360,
+          "height": 800,
+          "deviceScaleFactor": 2.625,
+          "disabled": false
+        },
+        "onlyCategories": ["performance"],
+        "chromeFlags": "--no-sandbox --disable-dev-shm-usage"
+      }
+    },
+    "assert": {
+      "assertions": {
+        "largest-contentful-paint": ["error", { "maxNumericValue": 2000 }],
+        "cumulative-layout-shift": ["error", { "maxNumericValue": 0.1 }],
+        "total-blocking-time": ["error", { "maxNumericValue": 200 }],
+        "resource-summary:total:size": ["error", { "maxNumericValue": 204800 }],
+        "resource-summary:script:size": ["error", { "maxNumericValue": 92160 }],
+        "resource-summary:document:size": ["warn", { "maxNumericValue": 30720 }],
+        "resource-summary:font:size": ["warn", { "maxNumericValue": 102400 }],
+        "resource-summary:image:size": ["warn", { "maxNumericValue": 0 }]
+      }
+    },
+    "upload": {
+      "target": "filesystem",
+      "outputDir": ".lighthouseci"
+    }
+  }
+}

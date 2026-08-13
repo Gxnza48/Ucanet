@@ -1,0 +1,94 @@
+/* app/tokens.css — el sistema de diseño (PART 18).
+   Única fuente de verdad de los valores visuales. Editar solo vía PR + actualización de PART 18.
+   Los componentes consumen tokens, nunca valores crudos (D8, anti-checklist 13-14). */
+:root {
+  /* color: modo claro */
+  --color-bg: #fafaf7;
+  --color-surface: #fafaf7;
+  --color-surface-raised: #f3f2ee;
+  --color-border: #e7e5e0;
+  --color-text-primary: #1c1b1a;
+  --color-text-secondary: #57534e;
+  --color-accent: #2440b3;
+  --color-accent-hover: #1b3190;
+  --color-accent-subtle: #eef1fa;
+  --color-on-accent: #fafaf7;
+  --color-danger: #a8231d;
+  --color-success: #166534;
+  --color-overlay: rgb(28 27 26 / 0.4);
+  --shadow-overlay: 0 4px 16px rgb(28 27 26 / 0.12);
+
+  /* tipografía */
+  --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-serif: 'Source Serif 4', Georgia, serif;
+  --text-xs: 0.6875rem;
+  --leading-xs: 0.875rem;
+  --text-s: 0.8125rem;
+  --leading-s: 1.125rem;
+  --text-m: 0.875rem;
+  --leading-m: 1.25rem;
+  --text-base: 1rem;
+  --leading-base: 1.625rem;
+  --text-l: 1.125rem;
+  --leading-l: 1.75rem;
+  --text-xl: 1.375rem;
+  --leading-xl: 1.875rem;
+  --text-2xl: 1.75rem;
+  --leading-2xl: 2.25rem;
+
+  /* espaciado / radios */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --radius-input: 2px;
+  --radius-container: 4px;
+}
+
+[data-theme='dark'] {
+  --color-bg: #161514;
+  --color-surface: #161514;
+  --color-surface-raised: #201f1d;
+  --color-border: #2e2c29;
+  --color-text-primary: #e9e7e2;
+  --color-text-secondary: #a6a29b;
+  --color-accent: #93a8f0;
+  --color-accent-hover: #b3c2f5;
+  --color-accent-subtle: #23293f;
+  --color-on-accent: #161514;
+  --color-danger: #e8837b;
+  --color-success: #7cc492;
+  --color-overlay: rgb(0 0 0 / 0.6);
+  --shadow-overlay: 0 4px 16px rgb(0 0 0 / 0.5);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --color-bg: #161514;
+    --color-surface: #161514;
+    --color-surface-raised: #201f1d;
+    --color-border: #2e2c29;
+    --color-text-primary: #e9e7e2;
+    --color-text-secondary: #a6a29b;
+    --color-accent: #93a8f0;
+    --color-accent-hover: #b3c2f5;
+    --color-accent-subtle: #23293f;
+    --color-on-accent: #161514;
+    --color-danger: #e8837b;
+    --color-success: #7cc492;
+    --color-overlay: rgb(0 0 0 / 0.6);
+    --shadow-overlay: 0 4px 16px rgb(0 0 0 / 0.5);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
