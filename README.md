@@ -12,10 +12,10 @@ Este README te deja el proyecto andando en local en unos 30 minutos. La fuente n
 
 Honestidad primero, porque cambia lo que vas a encontrar:
 
-- **Las migraciones nunca se ejecutaron contra una base real.** Los trece archivos de `supabase/migrations/` se escribieron contra la especificación de PART 8, sin Docker en el entorno de build. **El primer `supabase db reset` que corras es el que las valida.** Esperá errores de sintaxis, de orden de dependencias o de grants en esa primera pasada, y arreglalos hacia adelante (una migración nueva, nunca editando una ya aplicada — salvo que estés antes del primer apply de tu vida, que es exactamente el caso hoy).
+- **Las migraciones nunca se ejecutaron contra una base real.** Los catorce archivos de `supabase/migrations/` se escribieron contra la especificación de PART 8, sin Docker en el entorno de build. **El primer `supabase db reset` que corras es el que las valida.** Esperá errores de sintaxis, de orden de dependencias o de grants en esa primera pasada, y arreglalos hacia adelante (una migración nueva, nunca editando una ya aplicada — salvo que estés antes del primer apply de tu vida, que es exactamente el caso hoy).
 - **`lib/types.gen.ts` está escrito a mano** para que el proyecto tipe antes de que exista una base. Se regenera de verdad con `npm run gen:types` en cuanto tengas el stack local levantado, y CI falla si hay drift. Ver `docs/decisions.md`.
-- **`supabase/config.toml` no está commiteado todavía.** Lo crea `supabase init` en tu máquina; abajo está el bloque `[db.seed]` que hay que agregarle.
-- El repositorio se está construyendo en paralelo por varios agentes. Si un archivo que este README menciona (`scripts/forbidden.sh`, `e2e/`, `.github/workflows/ci.yml`, rutas de `app/`) todavía no está en tu copia, es porque esa parte del build no aterrizó, no porque el README esté mintiendo sobre dónde va.
+- **La suite pgTAP y los seis flujos de Playwright tampoco corrieron nunca**, por el mismo motivo. Los 66 tests de Vitest sí (son lógica pura). Ver `docs/deuda-conocida.md`.
+- **Lo que está roto o a medias vive en `docs/deuda-conocida.md`**, con la causa verificada de cada cosa. El bloqueante para el lanzamiento público es D1.
 
 ---
 
@@ -73,11 +73,7 @@ cp .env.example .env.local
 
 Si `supabase/config.toml` no existe todavía:
 
-```bash
-npx supabase init
-```
-
-Después abrí `supabase/config.toml` y declará los seeds en orden (el catálogo académico primero, las fixtures de desarrollo después):
+`supabase/config.toml` ya está en el repo, con los seeds declarados en orden — el catálogo académico primero, las fixtures de desarrollo después:
 
 ```toml
 [db.seed]
@@ -85,7 +81,7 @@ enabled   = true
 sql_paths = ["./seed/catalog/*.sql", "./seed.sql"]
 ```
 
-Sin esas dos líneas, `db reset` aplica solo `supabase/seed.sql`, que aborta a propósito con "el catálogo académico está vacío".
+Ese orden importa: `seed.sql` crea publicaciones y recursos que cuelgan de materias que tienen que existir antes, y aborta a propósito con "el catálogo académico está vacío" si se aplica solo.
 
 ### 4. Levantá la base
 
