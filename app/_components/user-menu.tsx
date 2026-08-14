@@ -9,8 +9,14 @@
  *
  * Está en la lista blanca de cliente de PART 19 §19.3 ("dropdown menu"). Todo el
  * comportamiento de teclado, foco y Esc lo pone `components/ui/menu` sobre Radix;
- * acá solo se arma la lista de ítems, que es la de §17.1.1 más "Panel de
- * moderación" cuando el rol lo habilita.
+ * acá solo se arma la lista de ítems: la de §17.1.1, más "Guardados" y más "Panel
+ * de moderación" cuando el rol lo habilita.
+ *
+ * "Guardados" va entre "Mi perfil" y "Ajustes" y no en el chrome: los marcadores se
+ * consultan cuando uno los busca, no todos los días, y el header está cerrado en
+ * cinco slots (§17.1.1). Este menú sólo lo monta `site-header.tsx` cuando hay
+ * sesión, así que el ítem no necesita condición propia: sin sesión no existe el
+ * disparador.
  *
  * El menú es el mismo en escritorio y en mobile (§17.1.2): lo único que cambia es
  * que el seudónimo se recorta a 12 caracteres en la barra superior chica.
@@ -50,6 +56,7 @@ export function UserMenu({
 
   const items: MenuItem[] = [
     { label: 'Mi perfil', href: `/u/${handle}` },
+    { label: 'Guardados', href: '/guardados' },
     { label: 'Ajustes', href: '/ajustes' },
     ...(isMod ? [{ label: 'Panel de moderación', href: '/mod' }] : []),
     { label: themeLabel, onSelect: () => applyTheme(targetTheme) },

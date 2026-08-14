@@ -157,6 +157,39 @@ export type Database = {
           },
         ]
       }
+      bookmarks: {
+        Row: {
+          created_at: string
+          post_id: number
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          post_id: number
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          post_id?: number
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: 'bookmarks_post_id_fkey'
+            columns: ['post_id']
+            isOneToOne: false
+            referencedRelation: 'posts'
+            referencedColumns: ['id']
+          },
+          {
+            foreignKeyName: 'bookmarks_user_id_fkey'
+            columns: ['user_id']
+            isOneToOne: false
+            referencedRelation: 'profiles'
+            referencedColumns: ['id']
+          },
+        ]
+      }
       carreras: {
         Row: {
           created_at: string
@@ -1574,6 +1607,70 @@ export type Database = {
       f_unaccent: {
         Args: { p_text: string }
         Returns: string
+      }
+      feed_guardados: {
+        Args: { p_limit?: number; p_after_created_at?: string; p_after_id?: number }
+        Returns: {
+          id: number
+          public_id: string
+          materia_id: number
+          carrera_id: number
+          kind: string
+          title: string
+          body: string
+          is_anonymous: boolean
+          author_handle: string
+          score: number
+          comments_count: number
+          locked_at: string
+          created_at: string
+          edited_at: string
+          last_activity_at: string
+          saved_at: string
+        }[]
+      }
+      feed_para_vos: {
+        Args: { p_now: string; p_limit?: number; p_after_rank?: number; p_after_id?: number }
+        Returns: {
+          id: number
+          public_id: string
+          materia_id: number
+          carrera_id: number
+          kind: string
+          title: string
+          body: string
+          is_anonymous: boolean
+          author_handle: string
+          score: number
+          comments_count: number
+          locked_at: string
+          created_at: string
+          edited_at: string
+          last_activity_at: string
+          rank: number
+          motivo: string
+        }[]
+      }
+      feed_tendencias: {
+        Args: { p_now: string; p_limit?: number }
+        Returns: {
+          id: number
+          public_id: string
+          materia_id: number
+          carrera_id: number
+          kind: string
+          title: string
+          body: string
+          is_anonymous: boolean
+          author_handle: string
+          score: number
+          comments_count: number
+          locked_at: string
+          created_at: string
+          edited_at: string
+          last_activity_at: string
+          velocidad: number
+        }[]
       }
       finalize_upload: {
         Args: { p_resource_public_id: string; p_files: Json }

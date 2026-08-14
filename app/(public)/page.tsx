@@ -7,21 +7,50 @@
  *     Reciente REAL —contenido de verdad dentro del primer viewport, no una landing— y el
  *     directorio de carreras en el riel. Esos enlaces de carrera son el esqueleto de rastreo
  *     de PART 23 §23.7: cada visita de un bot a `/` alcanza todas las carreras, y desde
- *     ahí todas las materias.
- *   Con sesión (§17.2) → composer colapsado, las dos pestañas y el feed Mis materias.
- *     Nada más: sin banners, sin tips de onboarding, sin módulo de tendencias (D2).
+ *     ahí todas las materias. Esta mitad NO se tocó y no se toca: es la superficie de SEO.
+ *   Con sesión (§17.2) → composer colapsado, las cuatro pestañas y el feed "Para vos", con
+ *     el motivo por fila y scroll infinito. Nada más: sin banners, sin tips de onboarding,
+ *     sin contadores de racha (D8).
+ *
+ * QUÉ CAMBIÓ Y POR QUÉ (enmienda del mapa de URLs, registrada en `docs/decisions.md`).
+ * Hasta ahora `/` con sesión mostraba "Mis materias". Pasa a mostrar "Para vos"
+ * (`feed_para_vos`), y "Mis materias" se mudó a `/mis-materias` con su consulta y sus
+ * estados vacíos intactos. El fundador pidió una home de uso diario: "Mis materias" es un
+ * recorte que puede estar tranquilo días enteros, y una home que suele estar vacía no se
+ * visita. "Para vos" mezcla lo que seguís, lo que se parece a lo que leés, lo de tu carrera
+ * y una cuota de descubrimiento, y CADA FILA VIAJA CON SU MOTIVO: es la diferencia entre un
+ * feed auditable y una caja negra (§12.3). D2 mandaba esto a fase 3; se adelanta sin cambiar
+ * el carácter del producto — filas densas, una sola tipografía, sin emoji en el cromo.
+ *
+ * PAGINACIÓN. La home logueada es la única superficie de lectura larga, así que es la única
+ * con el scroll infinito de §17.5.2: `<FeedList>` recibe `loadMoreParaVos` y monta el
+ * scroller, que auto-carga tres páginas y después pide un clic. Las otras tres pestañas
+ * paginan con enlaces. El reloj de la sesión de scroll viaja adentro del cursor, así que las
+ * páginas siguientes se puntúan contra el MISMO instante y no aparecen filas repetidas.
+ *
+ * LÍMITE CONOCIDO, escrito acá para que no se descubra en producción: las filas de esta
+ * home todavía NO llevan voto en línea ni botón de guardar, aunque los dos controles existen
+ * (`features/posts/components/post-row.tsx` con su ranura `acciones`, y
+ * `features/bookmarks/components/bookmark-button.tsx`). Falta un dato, no una pieza: pintar
+ * esos controles con el estado correcto exige saber qué votó y qué guardó el lector, y las
+ * dos lecturas por lote —`getViewerPostVotes(ids)` y `getBookmarkedIds(ids)`— toman los
+ * `bigint` internos, que `features/feed/queries.ts` descarta al armar su `PostListItem`.
+ * Con `voted`/`guardado` en falso por defecto, un toque sobre algo ya votado lo DESVOTA
+ * mostrando +1: peor que no ofrecer el control. La salida es una línea en la otra feature —
+ * sumar `id` a su `PostListItem` (solo servidor, como ya hace `features/posts`)— y entonces
+ * esta página cambia `<FeedList>` por su propio `<ul>` de `<PostRow signedIn voted acciones>`.
  *
  * RENDERIZADO (PART 20 §20.2). La tabla pide ISR 60 s para el visitante sin sesión y
  * render dinámico para el que tiene sesión. `export const revalidate = 60` declara ese TTL.
- * DESAJUSTE CONOCIDO, escrito acá para que no se descubra en producción: leer la sesión
- * (`getProfile()` → `cookies()`) marca la ruta como dinámica en Next 16 para todo el mundo,
- * no solo para quien trae cookie. El split "estático para anónimos, dinámico para logueados"
- * necesita PPR (apagado en `next.config.ts`) o una separación a nivel proxy. Hasta entonces
- * el `revalidate` documenta la intención y el TTL real lo aporta la CDN sobre las respuestas
- * sin cookie. Es el [FREE-TIER RISK] que §20.2 marca; queda anotado, no resuelto acá.
+ * DESAJUSTE CONOCIDO: leer la sesión (`getProfile()` → `cookies()`) marca la ruta como
+ * dinámica en Next 16 para todo el mundo, no solo para quien trae cookie. El split "estático
+ * para anónimos, dinámico para logueados" necesita PPR (apagado en `next.config.ts`) o una
+ * separación a nivel proxy. Hasta entonces el `revalidate` documenta la intención y el TTL
+ * real lo aporta la CDN sobre las respuestas sin cookie. Es el [FREE-TIER RISK] que §20.2
+ * marca; queda anotado, no resuelto acá.
  *
- * Cero JavaScript de ruta salvo el composer, que está en la lista blanca de PART 19 §19.3.
- * Las pestañas son enlaces (`FeedTabs`) y las filas del feed no llevan control de voto (R20).
+ * JavaScript de ruta: el composer y el scroller del feed, los dos en la lista blanca de
+ * PART 19 §19.3. Las pestañas son enlaces (`FeedTabs`). La home SIN sesión sigue en cero.
  */
 import type { Metadata } from 'next'
 import Link from 'next/link'
@@ -31,9 +60,10 @@ import { ButtonLink } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/empty-state'
 import { Pagination } from '@/components/ui/pagination'
 import { getCarreraOptions } from '@/features/auth/queries'
+import { loadMoreParaVos } from '@/features/feed/actions'
 import { FeedList } from '@/features/feed/components/feed-list'
 import { FeedTabs } from '@/features/feed/components/feed-tabs'
-import { getMisMateriasFeed, getRecentFeed } from '@/features/feed/queries'
+import { getParaVosFeed, getRecentFeed } from '@/features/feed/queries'
 import { getFollowedMateriaIds, listMaterias } from '@/features/materias/queries'
 import { Composer } from '@/features/posts/components/composer'
 import { cn } from '@/lib/cn'
@@ -73,7 +103,9 @@ export default async function HomePage({
   const cursor = typeof sp.cursor === 'string' ? sp.cursor : undefined
 
   if (!profile) return <LoggedOutHome cursor={cursor} />
-  return <LoggedInHome cursor={cursor} handle={profile.handle} />
+  // El cursor de la URL no se le pasa a "Para vos": esa mitad pagina con el scroller, que
+  // arrastra su propio cursor (con el reloj de la sesión adentro) sin tocar la dirección.
+  return <LoggedInHome handle={profile.handle} />
 }
 
 // ---------------------------------------------------------------------------
@@ -151,12 +183,12 @@ async function LoggedOutHome({ cursor }: { cursor?: string }) {
 }
 
 // ---------------------------------------------------------------------------
-// Con sesión (§17.2)
+// Con sesión (§17.2) — "Para vos"
 // ---------------------------------------------------------------------------
 
-async function LoggedInHome({ cursor, handle }: { cursor?: string; handle: string }) {
+async function LoggedInHome({ handle }: { handle: string }) {
   const [feed, actividad, seguidas, catalogo] = await Promise.all([
-    getMisMateriasFeed({ cursor }),
+    getParaVosFeed(),
     getRecentFeed({ limit: RAIL_ACTIVITY_SIZE }),
     getFollowedMateriaIds(),
     listMaterias(),
@@ -171,7 +203,7 @@ async function LoggedInHome({ cursor, handle }: { cursor?: string; handle: strin
   return (
     <div className="flex w-full flex-col gap-8 py-6 lg:flex-row lg:items-start">
       <div className="min-w-0 flex-1 lg:max-w-170">
-        <h1 className="sr-only">Mis materias</h1>
+        <h1 className="sr-only">Para vos</h1>
         <div className="py-3">
           <Composer
             materias={catalogo.map((materia) => ({ slug: materia.slug, nombre: materia.nombre }))}
@@ -180,21 +212,25 @@ async function LoggedInHome({ cursor, handle }: { cursor?: string; handle: strin
         </div>
 
         <FeedTabs activeHref="/" />
-        {/* -mt-px: la hairline superior de la lista se monta sobre la de las pestañas. */}
+        {/* -mt-px: la hairline superior de la lista se monta sobre la de las pestañas.
+            `loadMore` + `nextCursor` son lo que monta el scroller al pie de la lista; sin
+            página siguiente no se monta nada. */}
         <FeedList
           items={feed.items}
           className="-mt-px"
+          loadMore={loadMoreParaVos}
+          nextCursor={feed.nextCursor}
           emptyState={
             seguidas.length === 0 ? (
               <EmptyState
                 title="Todavía no seguís ninguna materia."
-                description="Buscá las tuyas y seguilas para armar tu feed."
+                description="Seguí las que cursás y tu feed se arma solo."
                 action={<ButtonLink href="/materias">Explorar materias</ButtonLink>}
               />
             ) : (
               <EmptyState
-                title="Tus materias están tranquilas por ahora."
-                description="Rompé el hielo: preguntá algo o compartí un apunte."
+                title="Por ahora no tenemos nada nuevo para vos."
+                description="Volvé en un rato, o mirá todo lo que se publicó en el sitio."
                 action={
                   <ButtonLink variant="secondary" href="/reciente">
                     Ver todo lo reciente
@@ -204,7 +240,6 @@ async function LoggedInHome({ cursor, handle }: { cursor?: string; handle: strin
             )
           }
         />
-        <Pagination nextHref={nextHref('/', feed.nextCursor)} />
       </div>
 
       {/* §17.6: en la home logueada el riel se descarta en mobile — "Mis materias" ya está

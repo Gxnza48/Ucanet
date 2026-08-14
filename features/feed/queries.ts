@@ -1,10 +1,24 @@
 import 'server-only'
 
 /**
- * features/feed/queries.ts — las dos pestañas del feed (PART 12).
+ * features/feed/queries.ts — las cuatro pestañas del feed (PART 12).
  *
- * "Mis materias" (`/`) y "Reciente" (`/reciente`) son TODO el feed del MVP (D2). No hay
- * "Para vos", no hay "Tendencias", no hay home algorítmico.
+ *   "Para vos"     `/`               `feed_para_vos`     — rankeada en Postgres, con motivo
+ *   "Mis materias" `/mis-materias`   `posts_public`      — la regla exacta de §12.2, en memoria
+ *   "Reciente"     `/reciente`       `posts_public`      — cronológico duro
+ *   "Tendencias"   `/tendencias`     `feed_tendencias`   — velocidad, sin paginar
+ *
+ * CAMBIO RESPECTO DEL PLAN, anotado acá para que no se lea como un descuido: D2 cortaba el
+ * MVP en dos pestañas y mandaba "Para vos" y "Tendencias" a fase 3. El fundador las adelantó
+ * porque la home tiene que ser una superficie de uso diario. Lo que NO cambia es el carácter:
+ * el orden se sigue pudiendo explicar en una línea (§12.3), y "Para vos" viaja con el `motivo`
+ * por el que cada fila está donde está — ver `MOTIVO_LABEL`, que es esa promesa hecha copy.
+ *
+ * DÓNDE SE PUNTÚA CADA UNA. "Mis materias" se rankea en memoria sobre una ventana acotada
+ * (`FEED_WINDOW`), porque su alcance es chico y la fórmula queda auditable en `ranking.ts`.
+ * "Para vos" y "Tendencias" NO: su alcance es el sitio entero, así que el orden lo calcula
+ * Postgres adentro de la RPC y este archivo solo lo transporta. La consecuencia práctica es
+ * que la RPC devuelve las filas YA ordenadas y este archivo nunca las reordena.
  *
  * ---------------------------------------------------------------------------------------
  * SOBRE `PostListItem` — la duplicación es deliberada y está mandada por el contrato
@@ -21,7 +35,8 @@ import 'server-only'
  * ---------------------------------------------------------------------------------------
  * LECTURAS PÚBLICAS
  * ---------------------------------------------------------------------------------------
- * Todo sale de `posts_public` (D14.2). Esa vista ya filtra `status = 'activo'` y ya anula
+ * Todo sale de `posts_public` o de una RPC `security definer` que lee esa misma vista
+ * (D14.2). Esa vista ya filtra `status = 'activo'` y ya anula
  * `author_handle` en el contenido anónimo; `author_id` directamente no existe en ella, así
  * que no hay forma de seleccionarlo por accidente. Los nombres de materia y carrera se
  * resuelven contra el catálogo (`materias`, `carreras`), que sí tiene `grant select` a
@@ -40,16 +55,25 @@ import 'server-only'
  * existe" de "falló".
  */
 
+import type { PostgrestError } from '@supabase/supabase-js'
 import { z } from 'zod'
 
 import { PAGE_SIZE } from '@/lib/config'
 import { createClient, getProfile } from '@/lib/supabase/server'
 import type { PostPublic } from '@/lib/types.gen'
 
+import { toMotivo, type FeedMotivo } from './motivos'
 import { compareRanked, rankPost } from './ranking'
 
 export { compareRanked, effectiveAgeHours, engagement, rankPost } from './ranking'
 export type { RankablePost } from './ranking'
+
+// El motivo de cada fila de "Para vos" vive en `./motivos`, no acá, por la misma razón que
+// la fórmula vive en `./ranking`: este archivo es `server-only` y el rótulo lo necesita
+// también el navegador (el scroll infinito renderiza filas nuevas del lado del cliente).
+// Se reexporta para que el resto de la aplicación lo consuma desde un solo lugar.
+export { MOTIVO_LABEL, isMotivo, toMotivo } from './motivos'
+export type { FeedMotivo } from './motivos'
 
 // ---------------------------------------------------------------------------------------
 // Tipos públicos de la feature
@@ -88,6 +112,13 @@ export type PostListItem = {
   commentsCount: number
   createdAt: string
   lastActivityAt: string
+  /**
+   * Solo lo trae "Para vos". Es OPCIONAL y no `| null` a propósito: `features/posts` y
+   * `features/materias` producen esta misma forma sin el campo (y no pueden importarlo, ver
+   * el encabezado), así que el campo tiene que poder faltar para que las tres formas sigan
+   * siendo estructuralmente intercambiables.
+   */
+  motivo?: FeedMotivo
 }
 
 /** Opciones de toda lectura de lista (BUILD-CONTRACT §4.5). */
@@ -301,7 +332,7 @@ async function loadScopes(
   return { materias, carreras }
 }
 
-function toListItem(post: NarrowedPost, scopes: ScopeMaps): PostListItem {
+function toListItem(post: NarrowedPost, scopes: ScopeMaps, motivo?: FeedMotivo): PostListItem {
   const materia = post.materiaId === null ? null : (scopes.materias.get(post.materiaId) ?? null)
   // El chip de carrera es el fallback de los posts sin materia, nunca un segundo chip.
   const carrera =
@@ -322,6 +353,7 @@ function toListItem(post: NarrowedPost, scopes: ScopeMaps): PostListItem {
     commentsCount: post.commentsCount,
     createdAt: post.createdAt,
     lastActivityAt: post.lastActivityAt,
+    motivo,
   }
 }
 
@@ -488,4 +520,185 @@ export async function getRecentFeed(opts: FeedOptions = {}): Promise<FeedPage> {
     hasMore && last !== undefined ? encodeCursor({ c: last.createdAt, i: last.id }) : null
 
   return { items, nextCursor }
+}
+
+// ---------------------------------------------------------------------------------------
+// Las dos pestañas que calcula Postgres
+// ---------------------------------------------------------------------------------------
+//
+// `feed_para_vos` y `feed_tendencias` son funciones `security definer` (BUILD-CONTRACT §5):
+// leen `posts_public` y las tablas de señales del lector adentro de la base, y devuelven las
+// filas YA ordenadas. Este archivo no reordena nada — si lo hiciera, el keyset dejaría de
+// coincidir con el orden real y aparecerían huecos.
+//
+// TIPADO: `lib/types.gen.ts` se escribe a mano contra las migraciones y todavía no conoce
+// estas dos funciones (las está escribiendo la migración en paralelo). El cliente tipado
+// rechaza un nombre de RPC que no está en `Database['public']['Functions']`, así que el
+// puente de abajo declara la firma acordada y castea el cliente UNA sola vez, en un lugar.
+// Cuando `types.gen.ts` incorpore las funciones, borrar `callFeedRpc` y llamar
+// `supabase.rpc('feed_para_vos', …)` directo: el resto del archivo no cambia.
+
+/** Las columnas comunes a las dos RPC. Todo nullable, igual que `posts_public`. */
+type FeedRpcRow = {
+  id: number | null
+  public_id: string | null
+  materia_id: number | null
+  carrera_id: number | null
+  kind: string | null
+  title: string | null
+  body: string | null
+  is_anonymous: boolean | null
+  author_handle: string | null
+  score: number | null
+  comments_count: number | null
+  locked_at: string | null
+  created_at: string | null
+  edited_at: string | null
+  last_activity_at: string | null
+}
+
+/** `feed_para_vos`: agrega el rank con el que se pagina y el motivo que se muestra. */
+type ParaVosRow = FeedRpcRow & { rank: number | null; motivo: string | null }
+
+/**
+ * `feed_tendencias`: agrega `velocidad`. No se lee acá — la RPC ya ordenó por ella y una fila
+ * de feed no muestra métricas de ranking (§12.5) — pero queda declarada para que el contrato
+ * esté escrito donde se consume.
+ */
+type TendenciasRow = FeedRpcRow & { velocidad: number | null }
+
+/** Fila de "Para vos" ya estrechada: la que se pagina y la que se rotula. */
+type ParaVosEntry = { post: NarrowedPost; rank: number | null; motivo?: FeedMotivo }
+
+/** Solo estos tres tipos viajan como argumento de las RPC de feed. */
+type FeedRpcArgs = Record<string, string | number | null>
+
+type FeedRpcResult<Row> = { data: Row[] | null; error: PostgrestError | null }
+
+function callFeedRpc<Row>(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  fn: 'feed_para_vos' | 'feed_tendencias',
+  args: FeedRpcArgs,
+): PromiseLike<FeedRpcResult<Row>> {
+  const client = supabase as unknown as {
+    rpc: (name: string, params: FeedRpcArgs) => PromiseLike<FeedRpcResult<Row>>
+  }
+  return client.rpc(fn, args)
+}
+
+/**
+ * Convierte una tanda de filas de RPC en filas de feed, resolviendo el catálogo una sola vez.
+ *
+ * `narrowPost` acepta estas filas sin ceremonia: tienen los mismos nombres de columna y la
+ * misma nulabilidad que `posts_public`, que es de donde salen. Las columnas de más
+ * (`locked_at`, `edited_at`, `rank`, `velocidad`) se ignoran acá: la fila del feed no las usa.
+ */
+async function toFeedItems(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  entries: Array<{ post: NarrowedPost; motivo?: FeedMotivo }>,
+): Promise<PostListItem[]> {
+  const scopes = await loadScopes(
+    supabase,
+    entries.map((entry) => entry.post),
+  )
+  return entries.map((entry) => toListItem(entry.post, scopes, entry.motivo))
+}
+
+/**
+ * "Para vos" — la home de uso diario (PART 12 §12.3, adelantada de fase 3).
+ *
+ * Mezcla lo que seguís, lo que se parece a lo que leés, lo de tu carrera y un resto para
+ * descubrir; el peso de cada canal lo decide `feed_para_vos`. Cada fila vuelve con su
+ * `motivo`, y ese motivo se muestra: es la diferencia entre un feed que se puede auditar y
+ * una caja negra.
+ *
+ * EL CURSOR LLEVA EL RELOJ ADENTRO. `t` es el `p_now` que se fijó al pedir la primera página
+ * y se arrastra sin tocar en todas las siguientes, de modo que las cinco páginas de una misma
+ * sesión de scroll se puntúan contra el MISMO instante. Sin eso, cada página recalcularía el
+ * decaimiento con una hora distinta, las filas se cruzarían entre páginas y el lector vería
+ * duplicados y huecos — el bug clásico del scroll infinito rankeado. Con `(t, rank, id)` el
+ * orden es total y determinista, y `(rank, id)` corta exactamente donde terminó la anterior.
+ *
+ * Es el mismo sobre que ya usa "Mis materias" (`rankedCursorSchema`): tres campos, base64url,
+ * opaco y sin firmar (§12.4). Por eso `lib/cursor.ts` se queda como está — su `Cursor` de dos
+ * campos no alcanza para esto, y el codificador de tres campos ya vive en este archivo.
+ *
+ * Sin sesión no hay nada que personalizar: devuelve página vacía y la ruta muestra Reciente.
+ */
+export async function getParaVosFeed(opts: FeedOptions = {}): Promise<FeedPage> {
+  const limit = clampLimit(opts.limit)
+  const profile = await getProfile()
+  if (!profile) return EMPTY_PAGE
+
+  const supabase = await createClient()
+  const cursor = decodeCursor(opts.cursor, rankedCursorSchema)
+  // `t0` de la primera página, o el que ya venía arrastrando el cursor.
+  const now = cursor?.t ?? new Date().toISOString()
+
+  const { data, error } = await callFeedRpc<ParaVosRow>(supabase, 'feed_para_vos', {
+    p_now: now,
+    // Una fila de más: es cómo se sabe que hay página siguiente sin contar el total.
+    p_limit: limit + 1,
+    p_after_rank: cursor?.r ?? null,
+    p_after_id: cursor?.i ?? null,
+  })
+
+  if (error) {
+    console.error('[feed] falló la lectura de Para vos', error)
+    return EMPTY_PAGE
+  }
+
+  const rows = (data ?? [])
+    .map((row): ParaVosEntry | null => {
+      const post = narrowPost(row)
+      return post === null ? null : { post, rank: row.rank, motivo: toMotivo(row.motivo) }
+    })
+    .filter((entry): entry is ParaVosEntry => entry !== null)
+
+  const hasMore = rows.length > limit
+  const page = hasMore ? rows.slice(0, limit) : rows
+  const items = await toFeedItems(supabase, page)
+
+  const last = page[page.length - 1]
+  // Sin rank no se puede armar el keyset: se corta la paginación en vez de arriesgar un
+  // cursor que repita filas. En la práctica la RPC siempre lo manda.
+  const nextCursor =
+    hasMore && last !== undefined && last.rank !== null
+      ? encodeCursor({ t: now, r: last.rank, i: last.post.id })
+      : null
+
+  return { items, nextCursor }
+}
+
+/**
+ * "Tendencias" — lo que se está moviendo AHORA (`/tendencias`).
+ *
+ * Ordena por velocidad (actividad por unidad de tiempo), no por acumulado: por eso es una
+ * lista corta y no una tabla de líderes. NO PAGINA, y es deliberado — `feed_tendencias` no
+ * toma cursor. Una tendencia con scroll infinito deja de ser una tendencia y se vuelve un
+ * ranking histórico, que es justo la mecánica de vitrina que el producto no quiere (D2, D8).
+ * Se lee entera de un vistazo y se vuelve al feed.
+ *
+ * `nextCursor` siempre es null: la firma sigue siendo `FeedPage` para que la lista y la
+ * página se rendericen con los mismos componentes que el resto de las pestañas.
+ */
+export async function getTendenciasFeed(limit?: number): Promise<FeedPage> {
+  const supabase = await createClient()
+
+  const { data, error } = await callFeedRpc<TendenciasRow>(supabase, 'feed_tendencias', {
+    p_now: new Date().toISOString(),
+    p_limit: clampLimit(limit),
+  })
+
+  if (error) {
+    console.error('[feed] falló la lectura de Tendencias', error)
+    return EMPTY_PAGE
+  }
+
+  const rows = (data ?? [])
+    .map(narrowPost)
+    .filter((post): post is NarrowedPost => post !== null)
+    .map((post) => ({ post }))
+
+  return { items: await toFeedItems(supabase, rows), nextCursor: null }
 }

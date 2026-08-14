@@ -423,8 +423,11 @@ Seeds: `supabase/seed/catalog/*.sql` (idempotent upserts on slug, from APPENDIX 
 ## 6. Routing contract (D7 — the URL map is a 10-year promise)
 
 ```
-/                         app/(public)/page.tsx
+/                         app/(public)/page.tsx          ("Para vos" con sesión; landing §17.3 sin ella)
+/mis-materias             app/(public)/mis-materias/page.tsx                (requiere sesión, noindex)
 /reciente                 app/(public)/reciente/page.tsx
+/tendencias               app/(public)/tendencias/page.tsx                  (sin paginación: 25 filas)
+/guardados                app/(me)/guardados/page.tsx                       (requiere sesión, noindex)
 /materias                 app/(public)/materias/page.tsx
 /materias/[slug]          app/(public)/materias/[slug]/page.tsx
 /carreras/[slug]          app/(public)/carreras/[slug]/page.tsx
@@ -439,15 +442,22 @@ Seeds: `supabase/seed/catalog/*.sql` (idempotent upserts on slug, from APPENDIX 
 /acerca /reglas /terminos /privacidad   app/(public)/<name>/page.tsx        (static)
 /apelacion                app/(public)/apelacion/page.tsx                   (auth required)
 /ingresar /registro /registro/continuar /recuperar /invitacion/[code]   app/(auth)/...
-/avisos /ajustes          app/(me)/...
+/avisos /ajustes /guardados                 app/(me)/...
 /mod /mod/reportes/[id] /mod/apelaciones /mod/usuarios /mod/metricas   app/(mod)/mod/...
 /auth/callback (GET) /auth/signout (POST)   app/auth/...
 /api/health /api/cron/aggregates            app/api/...
 /sitemap.xml /robots.txt  app/sitemap.ts, app/robots.ts
 ```
 
+Las cuatro pestañas de feed (`/`, `/mis-materias`, `/reciente`, `/tendencias`) son URLs
+propias y las pestañas son enlaces, no un widget de JS: es lo que hace que el back del
+navegador y el compartir funcionen (§12.1). La ampliación del mapa —las tres rutas nuevas y
+el cambio de significado de `/` con sesión— está registrada en `docs/decisions.md`; ninguna
+URL vieja se rompió.
+
 Rendering per PART 20 §20.2: `export const revalidate = <seconds>` on ISR routes;
-`export const dynamic = 'force-dynamic'` on `/avisos`, `/ajustes`, `/mod/*`, `/buscar`.
+`export const dynamic = 'force-dynamic'` on `/avisos`, `/ajustes`, `/guardados`,
+`/mis-materias`, `/mod/*`, `/buscar`.
 Deleted content renders an **HTTP 410** tombstone page, not a 404 (§0.5-R23c).
 
 ## 7. Security rules that fail review if broken (D14)

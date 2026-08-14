@@ -12,6 +12,13 @@
  *
  * Deslogueado, los slots 3-5 se reemplazan por "Ingresá" y "Crear cuenta" (§17.1.1).
  *
+ * LOS ÍTEMS DEL MENÚ DE CUENTA viven en `./user-menu`, no acá. Desde 2026-08-14 son
+ * "Mi perfil" · "Guardados" · "Ajustes" · tema · "Cerrar sesión", más "Panel de
+ * moderación" según el rol. "Guardados" entró al menú y no al chrome porque los
+ * slots están cerrados en cinco, y el menú es exactamente donde §17.1.1 manda los
+ * destinos que no se visitan todos los días. Como el bloque de slots 3-5 sólo se
+ * renderiza con `profile`, el ítem es inalcanzable sin sesión sin condición aparte.
+ *
  * MOBILE (<768px): la barra mide 48px y conserva wordmark + avisos + cuenta. La
  * búsqueda y "Publicar" se van a la barra inferior a propósito: metidas acá, todos
  * los objetivos táctiles quedarían por debajo de 44px (§17.1.2).

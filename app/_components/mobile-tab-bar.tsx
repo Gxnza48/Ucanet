@@ -17,15 +17,20 @@
  * casos: logueado son cinco slots de una columna; deslogueado, tres de una y el
  * alta ocupando dos.
  *
- * Es un Server Component sin estado activo. Marcar la pestaña actual exigiría
- * `usePathname()`, y la barra de navegación NO está en la lista blanca de cliente
- * de PART 19 §19.3: el precio serían kilobytes de JavaScript en todas las páginas
- * de contenido a cambio de un subrayado. La ubicación en la pantalla ya dice dónde
- * está uno.
+ * ESTADO ACTIVO (2026-08-14). Hasta esta versión la barra no marcaba la pestaña
+ * actual, y el encabezado explicaba por qué: saberlo exige `usePathname()`, o sea
+ * un Client Component, y la barra no estaba en la lista blanca de PART 19 §19.3.
+ * La home de uso diario cambió el cálculo — con cuatro pestañas de feed detrás del
+ * mismo slot, no decir dónde está uno es una barra que miente por omisión — así que
+ * el estado se marca, y se paga lo mínimo: el único archivo de cliente es
+ * `./tab-bar-link`, que resuelve el pathname y pone `aria-current`; el ícono, el
+ * rótulo y el badge siguen renderizándose en el servidor y viajan como `children`.
+ * La ampliación de la lista blanca está registrada en docs/decisions.md.
  *
  * "Publicar" no es un FAB flotante: los FAB son la estética de dashboard que §5
  * prohíbe. Es un slot más, con el ícono en acento dentro de un cuadrado de 2px de
- * radio (§17.1.2).
+ * radio (§17.1.2). Tampoco se marca nunca como activo: es una acción, no una
+ * sección, y su destino es el ancla del compositor.
  */
 import { Bell, BookOpen, Home, Plus, Search } from 'lucide-react'
 import Link from 'next/link'
@@ -36,6 +41,7 @@ import { cn } from '@/lib/cn'
 import { getProfile } from '@/lib/supabase/server'
 
 import { COMPOSER_HREF, ChromeUnreadBadge } from './site-header'
+import { TabBarLink } from './tab-bar-link'
 
 /** Alto de la barra: 56px (§17.1.2). El hueco que deja abajo lo suma el inset seguro. */
 const BAR_HEIGHT_PX = 56
@@ -43,9 +49,43 @@ const BAR_HEIGHT_PX = 56
 /**
  * Caja táctil de cada slot: ocupa la celda entera de la grilla, con 44px de alto
  * mínimo — el piso de objetivo táctil de §17.7 — dentro de una barra de 56px.
+ * `relative` es el ancla de dos hijos posicionados: el badge de avisos y la marca
+ * de 2px del slot actual.
  */
 const SLOT =
-  'flex h-full min-h-11 w-full flex-col items-center justify-center gap-0.5 rounded-input px-1'
+  'relative flex h-full min-h-11 w-full flex-col items-center justify-center gap-0.5 rounded-input px-1'
+
+/**
+ * El slot actual: el texto sube de secundario a primario y una barra de 2px en
+ * acento se apoya contra el borde superior de la barra.
+ *
+ * Es el mismo vocabulario que la pestaña activa de `components/ui/tabs` (2px de
+ * acento sobre el borde que da al contenido), espejado hacia arriba porque acá el
+ * contenido está arriba. Va como pseudo-elemento y no como borde para que el ícono
+ * y el rótulo queden a la misma altura que en los slots inactivos: un `border-t-2`
+ * les correría 2px la caja de contenido.
+ *
+ * El color NO es el único portador del estado (§17.7): están además el peso de la
+ * marca y, sobre todo, el `aria-current` que pone `TabBarLink`.
+ */
+const SLOT_ACTIVE =
+  'text-text-primary before:absolute before:inset-x-4 before:top-0 before:h-0.5 before:bg-accent'
+
+const SLOT_INACTIVE = 'text-text-secondary'
+
+/**
+ * Todo esto es "Inicio". Las cuatro pestañas del feed —"Para vos" (`/`), "Mis
+ * materias", "Reciente" y "Tendencias", ver `FEED_TABS` en
+ * features/feed/components/feed-tabs.tsx— son un solo destino conceptual: se llega
+ * a las cuatro desde este slot y ninguna se gana una ranura propia, porque un sexto
+ * slot dejaría los objetivos táctiles por debajo de 44px (§17.1.2).
+ *
+ * La lista se repite acá en vez de importarse de la feature: importar el módulo de
+ * las pestañas metería el componente `Tabs` en el bundle de cliente de TODAS las
+ * páginas para leer cuatro cadenas. Si alguna vez se agrega una quinta pestaña de
+ * feed, va también en esta lista.
+ */
+const INICIO_ROUTES = ['/mis-materias', '/reciente', '/tendencias'] as const
 
 function TabIcon({ icon: Icon }: { icon: LucideIcon }) {
   // 18px es la medida de íconos en barras de navegación (§18.5).
@@ -54,6 +94,36 @@ function TabIcon({ icon: Icon }: { icon: LucideIcon }) {
 
 function TabLabel({ children }: { children: ReactNode }) {
   return <span className="text-xs">{children}</span>
+}
+
+/**
+ * Un slot de navegación: la celda de la grilla más el link que se marca solo.
+ *
+ * Los slots que NO son navegación —"Publicar" y, sin sesión, "Crear cuenta"— no
+ * pasan por acá: son acciones, van en acento y nunca llevan `aria-current`.
+ */
+function TabSlot({
+  href,
+  matches,
+  children,
+}: {
+  href: string
+  matches?: readonly string[]
+  children: ReactNode
+}) {
+  return (
+    <li className="flex">
+      <TabBarLink
+        href={href}
+        matches={matches}
+        className={SLOT}
+        activeClassName={SLOT_ACTIVE}
+        inactiveClassName={SLOT_INACTIVE}
+      >
+        {children}
+      </TabBarLink>
+    </li>
+  )
 }
 
 export async function MobileTabBar() {
@@ -83,19 +153,17 @@ export async function MobileTabBar() {
         style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
       >
         <ul className="grid grid-cols-5" style={{ height: `${BAR_HEIGHT_PX}px` }}>
-          <li className="flex">
-            <Link href="/" className={cn(SLOT, 'text-text-secondary')}>
-              <TabIcon icon={Home} />
-              <TabLabel>Inicio</TabLabel>
-            </Link>
-          </li>
+          <TabSlot href="/" matches={INICIO_ROUTES}>
+            <TabIcon icon={Home} />
+            <TabLabel>Inicio</TabLabel>
+          </TabSlot>
 
-          <li className="flex">
-            <Link href="/materias" className={cn(SLOT, 'text-text-secondary')}>
-              <TabIcon icon={BookOpen} />
-              <TabLabel>Materias</TabLabel>
-            </Link>
-          </li>
+          {/* El prefijo marca también `/materias/[slug]` y su pestaña de recursos:
+              seguir dentro del catálogo es seguir en esta sección. */}
+          <TabSlot href="/materias">
+            <TabIcon icon={BookOpen} />
+            <TabLabel>Materias</TabLabel>
+          </TabSlot>
 
           {profile ? (
             <li className="flex">
@@ -114,23 +182,19 @@ export async function MobileTabBar() {
             </li>
           )}
 
-          <li className="flex">
-            <Link href="/buscar" className={cn(SLOT, 'text-text-secondary')}>
-              <TabIcon icon={Search} />
-              <TabLabel>Buscar</TabLabel>
-            </Link>
-          </li>
+          <TabSlot href="/buscar">
+            <TabIcon icon={Search} />
+            <TabLabel>Buscar</TabLabel>
+          </TabSlot>
 
           {profile ? (
-            <li className="flex">
-              <Link href="/avisos" className={cn(SLOT, 'relative text-text-secondary')}>
-                <TabIcon icon={Bell} />
-                <TabLabel>Avisos</TabLabel>
-                <Suspense fallback={null}>
-                  <ChromeUnreadBadge className="absolute right-3 top-2" />
-                </Suspense>
-              </Link>
-            </li>
+            <TabSlot href="/avisos">
+              <TabIcon icon={Bell} />
+              <TabLabel>Avisos</TabLabel>
+              <Suspense fallback={null}>
+                <ChromeUnreadBadge className="absolute right-3 top-2" />
+              </Suspense>
+            </TabSlot>
           ) : null}
         </ul>
       </nav>

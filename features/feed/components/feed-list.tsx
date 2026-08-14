@@ -1,120 +1,43 @@
 /**
  * features/feed/components/feed-list.tsx — la lista de publicaciones (PART 12 §12.5).
  *
- * Una publicación = una fila compacta, nunca una tarjeta (D8: densidad por filas). El
- * contrato de contenido de la fila lo fija §12.5 y se cumple literal acá:
+ * Un `<ul>` de filas compactas, nunca tarjetas (D8: densidad por filas). El contrato de
+ * contenido de cada fila lo cumple `FeedRow` (ver `feed-row.tsx`, que lo documenta tabla por
+ * tabla); esta lista solo las ubica y decide qué va debajo.
  *
- * | Rótulo de tipo | "Pregunta" solo cuando `kind = 'pregunta'`; el resto no lleva nada     |
- * | Título         | Completo. Si no hay título, los primeros 120 caracteres del cuerpo     |
- * | Preview        | Solo si HAY título: 160 caracteres, saltos aplastados, "…"             |
- * | Autor          | Handle o "Anónimo". Ningún otro dato de autor, nunca (D3)              |
- * | Chip de scope  | Materia → /materias/[slug]; si no hay materia, la carrera; si no, nada |
- * | Tiempo         | Relativo, dentro de un <time dateTime> con el timestamp completo       |
- * | Votos          | "12 votos"; se oculta en cero (una pared de "0 votos" se lee a fracaso)|
- * | Comentarios    | "8 comentarios"; el cero es silencio, no se escribe "Sin comentarios"  |
+ * Es la misma lista que usan la página de materia, la de carrera y el perfil: recibe filas
+ * con la forma de `PostListItem` y no le importa de qué consulta salieron.
  *
- * Toda la fila es UN destino de link a `/p/[publicId]`; el chip de materia es el único link
- * anidado. No hay miniaturas ni botones de voto en el feed (§12.5, §17.5.1: se vota en la
- * página del post) — así la fila es estática y barata de renderizar, y esta lista puede ser
- * Server Component puro, sin JavaScript de ruta.
+ * DOS MODOS, y el segundo es opcional a propósito:
  *
- * Es la misma lista que usan la página de materia y la de carrera: recibe filas con la
- * forma de `PostListItem` y no le importa de qué consulta salieron.
+ *   - Sin `loadMore` (materia, carrera, perfil, y la home del visitante sin sesión): la lista
+ *     es Server Component puro, sin un byte de JavaScript de ruta, y la página siguiente se
+ *     alcanza con `<Pagination>` —links de verdad, con el cursor en la URL—. Es el modo que
+ *     mantiene la promesa de BUILD-CONTRACT §8 en las páginas de contenido.
+ *   - Con `loadMore` (las pestañas del feed): se monta `FeedInfinite` al pie, que carga solo
+ *     las primeras páginas y después ofrece un botón (§17.5.2). El scroller vive DENTRO del
+ *     `<ul>` porque las filas que trae pertenecen a la misma lista, no a una segunda.
+ *
+ * El scroller solo se monta si además hay `nextCursor`: sin página siguiente no hay nada que
+ * cargar y montar un botón muerto sería peor que no montarlo.
  */
 import type { ReactNode } from 'react'
 
-import { Chip } from '@/components/ui/chip'
 import { cn } from '@/lib/cn'
-import { ListRow } from '@/components/ui/list-row'
-import { formatDate, relativeTime } from '@/lib/utils/dates'
-import { excerpt } from '@/lib/utils/text'
 
 import type { PostListItem } from '../queries'
+import { FeedInfinite, type LoadMoreFeed } from './feed-infinite'
+import { FeedRow } from './feed-row'
 
-/** §12.5: sin título, el cuerpo hace de título hasta 120 caracteres. */
-const TITLE_FALLBACK_CHARS = 120
-
-/** §12.5: con título, el preview del cuerpo llega hasta 160. */
-const PREVIEW_CHARS = 160
-
-function votosLabel(score: number): string {
-  return score === 1 ? '1 voto' : `${score} votos`
-}
-
-function comentariosLabel(count: number): string {
-  return count === 1 ? '1 comentario' : `${count} comentarios`
-}
-
-/** El punto medio que separa los datos de la línea de meta. Decorativo: no se lee. */
-function Separator() {
-  return (
-    <span aria-hidden="true" className="px-1">
-      ·
-    </span>
-  )
-}
-
-export function FeedRow({ post, showScope = true }: { post: PostListItem; showScope?: boolean }) {
-  const scope = post.materia ?? post.carrera
-  const scopeHref = post.materia
-    ? `/materias/${post.materia.slug}`
-    : post.carrera
-      ? `/carreras/${post.carrera.slug}`
-      : null
-
-  const hasTitle = post.title !== null && post.title.length > 0
-  const titleLine = hasTitle ? post.title : excerpt(post.body, TITLE_FALLBACK_CHARS)
-  const preview = hasTitle ? excerpt(post.body, PREVIEW_CHARS) : null
-
-  return (
-    <ListRow
-      href={`/p/${post.publicId}`}
-      meta={
-        <>
-          <span>{post.isAnonymous ? 'Anónimo' : (post.authorHandle ?? 'Anónimo')}</span>
-          {showScope && scope && scopeHref ? (
-            <>
-              <Separator />
-              <Chip href={scopeHref}>{scope.nombre}</Chip>
-            </>
-          ) : null}
-          <Separator />
-          <time dateTime={post.createdAt} title={formatDate(post.createdAt)}>
-            {relativeTime(post.createdAt)}
-          </time>
-        </>
-      }
-      title={
-        <>
-          {post.kind === 'pregunta' ? (
-            <Chip variant="neutral" className="mr-2 align-middle">
-              Pregunta
-            </Chip>
-          ) : null}
-          {titleLine}
-        </>
-      }
-      trailing={
-        post.score > 0 || post.commentsCount > 0 ? (
-          <>
-            {post.score > 0 ? <span>{votosLabel(post.score)}</span> : null}
-            {post.score > 0 && post.commentsCount > 0 ? <Separator /> : null}
-            {post.commentsCount > 0 ? <span>{comentariosLabel(post.commentsCount)}</span> : null}
-          </>
-        ) : null
-      }
-    >
-      {/* line-clamp-3 (§17.2.3): el preview se corta a tres líneas sin "ver más" —
-          el destino de la fila entera ya es el post. */}
-      {preview ? <span className="line-clamp-3">{preview}</span> : null}
-    </ListRow>
-  )
-}
+export { FeedRow } from './feed-row'
+export type { LoadMoreFeed } from './feed-infinite'
 
 export function FeedList({
   items,
   showScope = true,
   emptyState,
+  loadMore,
+  nextCursor = null,
   className,
 }: {
   items: PostListItem[]
@@ -129,6 +52,13 @@ export function FeedList({
    * (el composer, `/materias`), así que los arma la página y este componente solo los ubica.
    */
   emptyState?: ReactNode
+  /**
+   * La Server Action de `../actions` que devuelve la página siguiente. Cuando viene, la
+   * lista pagina sola; cuando no, la página se encarga con `<Pagination>`.
+   */
+  loadMore?: LoadMoreFeed
+  /** El `nextCursor` de la primera página. Solo se usa junto con `loadMore`. */
+  nextCursor?: string | null
   className?: string
 }) {
   if (items.length === 0) return emptyState ?? null
@@ -138,6 +68,16 @@ export function FeedList({
       {items.map((post) => (
         <FeedRow key={post.publicId} post={post} showScope={showScope} />
       ))}
+      {/* `key={nextCursor}`: cuando el servidor entrega una primera página nueva, el scroller
+          se remonta y tira la cola que había acumulado de la consulta anterior. */}
+      {loadMore && nextCursor !== null ? (
+        <FeedInfinite
+          key={nextCursor}
+          initialCursor={nextCursor}
+          loadMore={loadMore}
+          showScope={showScope}
+        />
+      ) : null}
     </ul>
   )
 }
