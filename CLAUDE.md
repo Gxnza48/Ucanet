@@ -166,3 +166,13 @@ Works logged-out where public · mobile at 390 px checked · keyboard-navigable 
 ## When unsure
 
 Do not invent schema, endpoints, types or copy. Open `docs/BUILD-CONTRACT.md` for the signature, `docs/plan/` for the decision, `supabase/migrations/` for what the column is actually called. If none of them answers, stop and ask. A silent assumption in this repo becomes a column that does not exist, an English string in production, or an anonymity leak — and the third one is the kind the project does not survive.
+
+<!-- BEGIN:nextjs-agent-rules -->
+
+# This is NOT the Next.js you know
+
+This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
+
+This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
+
+<!-- END:nextjs-agent-rules -->

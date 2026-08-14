@@ -119,8 +119,13 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
   const theme = await getTheme()
 
   return (
-    <html lang="es-AR" data-theme={themeAttribute(theme)}>
-      <body className={serif.variable}>
+    // `suppressHydrationWarning` en los dos nodos raíz: no tapa un bug nuestro, tapa a
+    // las extensiones del navegador (gestores de contraseñas, correctores) que inyectan
+    // atributos en <html> y <body> antes de que React hidrate. Sin esto, cualquier
+    // visitante con una extensión común ve un error rojo de hidratación en consola por
+    // algo que no está en nuestro código. Es el único lugar del árbol donde se admite.
+    <html lang="es-AR" data-theme={themeAttribute(theme)} suppressHydrationWarning>
+      <body className={serif.variable} suppressHydrationWarning>
         <ToastProvider>
           {/* Primer elemento enfocable de la página (§17.7). */}
           <a href={`#${CONTENT_ID}`} className="skip-link">
