@@ -4,6 +4,7 @@
  * CINCO SLOTS, con su justificación de la tabla de §17.1.2:
  *
  *   1. Inicio    `/`          → el feed es la superficie del chequeo diario; el pulgar empieza por la izquierda.
+ *                               Lleva a "Para vos" y se marca activo en las cuatro rutas de feed (ver INICIO_ROUTES).
  *   2. Materias  `/materias`  → sin acceso de un toque, los recursos se mueren en mobile.
  *   3. Publicar  compositor   → EL CENTRO es donde descansa el pulgar en cualquier agarre; crear tiene que ser lo más barato.
  *   4. Buscar    `/buscar`    → página completa con el input enfocado, mejor que un input encogido en el header.
@@ -65,8 +66,8 @@ const SLOT =
  * y el rótulo queden a la misma altura que en los slots inactivos: un `border-t-2`
  * les correría 2px la caja de contenido.
  *
- * El color NO es el único portador del estado (§17.7): están además el peso de la
- * marca y, sobre todo, el `aria-current` que pone `TabBarLink`.
+ * El color NO es el único portador del estado (§17.7): la marca de 2px lo dice por
+ * forma y posición, y el `aria-current` que pone `TabBarLink` lo dice por nombre.
  */
 const SLOT_ACTIVE =
   'text-text-primary before:absolute before:inset-x-4 before:top-0 before:h-0.5 before:bg-accent'
